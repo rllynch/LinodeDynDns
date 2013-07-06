@@ -1,4 +1,4 @@
-#!/usr/bin/python3.1
+#!/usr/bin/python3.2
 #
 # Easy Python3 Dynamic DNS
 # By Jed Smith <jed@jedsmith.org> 4/29/2009
@@ -22,25 +22,25 @@
 #   3. Edit the three configuration options below, following the directions for
 #      each.  As this is a quick hack, it assumes everything goes right.
 #
-# Set the domain name below.  The API key MUST have write access to this 
-# resource ID.
+#   4. Configure uwsgi or similar to use this script. Password protect access
+#      to this script and have the username be the FQDN of the host.
 #
-DOMAIN = "home.yourdomain.com"
+#   5. Configure clients (e.g. DD-WRT, Tomato, etc.) with a custom dynamic
+#      DNS updater that fetches this web page.
+#
+# Set the domain name below.  The API key MUST have write access to this 
+# resource ID. Do not include the hostname here.
+#
+DOMAIN = "yourdomain.com"
+#
+# List of hosts that may be updated using this script
+#
+VALIDHOSTS = [ "home", "host2" ]
 #
 # Your Linode API key.  You can generate this by going to your profile in the
 # Linode manager.  It should be fairly long.
 #
 KEY = "yourapikey"
-#
-# The URI of a Web service that returns your IP address as plaintext.  You are
-# welcome to leave this at the default value and use mine.  If you want to run
-# your own, the source code of that script is:
-#
-#     <?php
-#     header("Content-type: text/plain");
-#     printf("%s", $_SERVER["REMOTE_ADDR"]);
-#
-GETIP = "http://hosted.jedsmith.org/ip.php"
 #
 # If for some reason the API URI changes, or you wish to send requests to a
 # different URI for debugging reasons, edit this.  {0} will be replaced with the
@@ -102,24 +102,12 @@ def execute(action, parameters):
 			err["ERRORMESSAGE"]))
 	return json["DATA"]
 
-def ip():
-	if DEBUG:
-		print("-->", GETIP)
-	file, headers = urlretrieve(GETIP)
-	result = open(file).read().strip()
-	if DEBUG:
-		print("<--", file)
-		print(headers, end="")
-		print(result)
-		print()
-	return result
-
-def main():
+def updateip(fqdn, newIp):
 	try:
 		# Determine DomainId
 		domains = execute("domain.list", {})
 		for domain in domains:
-			if DOMAIN.endswith(domain["DOMAIN"]):
+			if fqdn.endswith(domain["DOMAIN"]):
 				matchedDomain = domain
 				break
 		if matchedDomain is None:
@@ -135,7 +123,7 @@ def main():
 		resources = execute("domain.resource.list",
 			{"DomainId": domainId})
 		for resource in resources:
-			if resource["NAME"] + "." + domainName == DOMAIN:
+			if resource["NAME"] + "." + domainName == fqdn:
 				matchedResource = resource
 				break
 		if resource is None:
@@ -147,22 +135,37 @@ def main():
 			print("  ResourceId = {0}".format(resourceId))
 			print("  Target = {0}".format(oldIp))
 
-		# Determine public ip
-		newIp = ip()
 		if oldIp == newIp:
-			print("OK")
-			return 0
+			return("OK {0} -> {1} (unchanged)".format(oldIp, newIp))
 		
 		# Update public ip
 		execute("domain.resource.update", {
 			"ResourceID": resourceId,
 			"DomainID": domainId,
 			"Target": newIp})
-		print("OK {0} -> {1}".format(oldIp, newIp))
-		return 1
+		return("OK {0} -> {1}".format(oldIp, newIp))
 	except Exception as excp:
-		print("FAIL {0}: {1}".format(type(excp).__name__, excp))
-		return 2
+		return("FAIL {0}: {1}".format(type(excp).__name__, excp))
 
-if __name__ == "__main__":
-	exit(main())
+def application(environ, start_response):
+	status = '200 OK'
+	output = ""
+	
+	response_headers = [('Content-type', 'text/plain')]
+	start_response(status, response_headers)
+
+	# Get data from fields
+	fqdn     = environ["REMOTE_USER"]
+	ip       = environ["REMOTE_ADDR"]
+	hostnameValid = 0
+
+	for validhost in VALIDHOSTS:
+		if fqdn == (validhost + "." + DOMAIN):
+			hostnameValid = 1
+	
+	if hostnameValid == 1:
+		output = updateip(fqdn, ip)
+	else:
+		output = fqdn + " is not allowed"
+
+	return output.encode('utf-8')
